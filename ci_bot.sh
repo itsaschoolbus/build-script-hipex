@@ -319,12 +319,17 @@ else
     rm "$ota_file"
 
     zip_file=$(ls "$OUT"/*$DEVICE*.zip | tail -n -1)
+    json_file=$(ls "$OUT"/*$DEVICE*.json | tail -n -1)
 
     echo -e "$BOLD_GREEN\nStarting to upload the ZIP file now...$RESET\n"
 
     zip_file_url=$(upload_file "$zip_file")
     zip_file_md5sum=$(md5sum $zip_file | awk '{print $1}')
     zip_file_size=$(ls -sh $zip_file | awk '{print $1}')
+
+    echo -e "$BOLD_GREEN\nStarting to upload the JSON file now...$RESET\n"
+
+    json_file_url=$(upload_file "$json_file")
 
     build_finished_message="🟢 | <i>ROM compiled!!</i>
 
@@ -333,6 +338,7 @@ else
 <b>• TYPE:</b> <code>$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")</code>
 <b>• SIZE:</b> <code>$zip_file_size</code>
 <b>• MD5SUM:</b> <code>$zip_file_md5sum</code>
+<b>• JSON:</b> $json_file_url
 <b>• DOWNLOAD:</b> $zip_file_url
 
 <i>Compilation took $HOURS hours(s) and $MINUTES minutes(s)</i>"
