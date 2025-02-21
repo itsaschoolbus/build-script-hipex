@@ -27,6 +27,7 @@ ROOT_DIRECTORY="$(pwd)"
 # Post Constants. Required variables for posting purposes.
 DEVICE="$(sed -e "s/^.*_//" -e "s/-.*//" <<<"$CONFIG_LUNCH")"
 ROM_NAME="$(sed "s#.*/##" <<<"$(pwd)")"
+ANDROID_VERSION=$(grep 'PLATFORM_VERSION := ' build/make/core/version_defaults.mk | awk '{print $3}')
 OUT="$(pwd)/out/target/product/$DEVICE"
 STICKER_URL="https://raw.githubusercontent.com/Weebo354342432/reimagined-enigma/main/update.webp"
 
@@ -237,6 +238,7 @@ build_start_message="🟡 | <i>Compiling ROM...</i>
 
 <b>• ROM:</b> <code>$ROM_NAME</code>
 <b>• DEVICE:</b> <code>$DEVICE</code>
+<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
 <b>• JOBS:</b> <code>$CONFIG_COMPILE_JOBS Cores</code>
 <b>• TYPE:</b> <code>$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")</code>
 <b>• PROGRESS</b>: <code>Lunching...</code>"
@@ -293,6 +295,7 @@ build_progress_message="🟡 | <i>Compiling ROM...</i>
 
 <b>• ROM:</b> <code>$ROM_NAME</code>
 <b>• DEVICE:</b> <code>$DEVICE</code>
+<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
 <b>• JOBS:</b> <code>$CONFIG_COMPILE_JOBS Cores</code>
 <b>• TYPE:</b> <code>$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")</code>
 <b>• PROGRESS:</b> <code>$(fetch_progress)</code>"
@@ -335,6 +338,7 @@ else
 
 <b>• ROM:</b> <code>$ROM_NAME</code>
 <b>• DEVICE:</b> <code>$DEVICE</code>
+<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
 <b>• TYPE:</b> <code>$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")</code>
 <b>• SIZE:</b> <code>$zip_file_size</code>
 <b>• MD5SUM:</b> <code>$zip_file_md5sum</code>
