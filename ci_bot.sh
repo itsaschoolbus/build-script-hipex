@@ -10,14 +10,14 @@ else
 fi
 
 # Handle device codename
-if [[ -z "$CONFIG_LUNCH" ]]; then
+if [[ -z "$CONFIG_DEVICE" ]]; then
     read -p "Enter the device codename: " DEVICE
     if [[ -z "$DEVICE" ]]; then
         echo "ERROR: Device codename not provided." >&2
         exit 1
     fi
 else
-    DEVICE="$(sed -e "s/^.*_//" -e "s/-.*//" <<<"$CONFIG_LUNCH")"
+    DEVICE="$CONFIG_DEVICE"
 fi
 
 # Script Constants. Required variables throughout the script.

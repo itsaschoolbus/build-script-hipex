@@ -34,7 +34,7 @@ Before using this script, ensure you have the following dependencies installed:
 
 3.  **Fill in the required variables** in `config.env`:
 
-    - `CONFIG_LUNCH`: The lunch command for your device (e.g., `lineage_lancelot-user`). If left empty, the script will prompt for the device codename.
+    - `CONFIG_DEVICE`: The device codename (e.g., `lancelot`). If left empty, the script will prompt for it.
     - `CONFIG_TARGET`: The build target (e.g., `bacon`).
     - `CONFIG_OFFICIAL_FLAG`: The flag to export for an official build.
     - `CONFIG_CHATID`: Your Telegram channel/group chat ID.
