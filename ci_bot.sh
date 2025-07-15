@@ -1,360 +1,364 @@
 #!/bin/bash
+set -o pipefail
 
-# Build Configuration. Required variables to compile the ROM.
-CONFIG_LUNCH=""
-CONFIG_OFFICIAL_FLAG=""
-CONFIG_TARGET="bacon"
+# Load configuration
+if [ -f "config.env" ]; then
+    source "config.env"
+else
+    echo "Error: config.env not found." >&2
+    exit 1
+fi
 
-# Telegram Configuration
-CONFIG_CHATID="-"
-CONFIG_BOT_TOKEN=""
-CONFIG_ERROR_CHATID=""
-
-# PixelDrain api keys to upload builds
-CONFIG_PDUP_API=""
-
-# Turning off server after build or no
-POWEROFF=""
+# Handle device codename
+if [[ -z "$CONFIG_LUNCH" ]]; then
+    read -p "Enter the device codename: " DEVICE
+    if [[ -z "$DEVICE" ]]; then
+        echo "ERROR: Device codename not provided." >&2
+        exit 1
+    fi
+else
+    DEVICE="$(sed -e "s/^.*_//" -e "s/-.*//" <<<"$CONFIG_LUNCH")"
+fi
 
 # Script Constants. Required variables throughout the script.
 YELLOW=$(tput setaf 3)
 BOLD=$(tput bold)
 RESET=$(tput sgr0)
 BOLD_GREEN=${BOLD}$(tput setaf 2)
+RED=$(tput setaf 1)
 OFFICIAL="0"
 ROOT_DIRECTORY="$(pwd)"
 
 # Post Constants. Required variables for posting purposes.
-DEVICE="$(sed -e "s/^.*_//" -e "s/-.*//" <<<"$CONFIG_LUNCH")"
 ROM_NAME="$(sed "s#.*/##" <<<"$(pwd)")"
-ANDROID_VERSION=$(grep -oP '(?<=android-)[0-9]+' .repo/manifests/default.xml | head -n1)
-OUT="$(pwd)/out/target/product/$DEVICE"
+ANDROID_VERSION=$(grep -oP '(?<=android-)[0-9]+' .repo/manifests/default.xml | head -n1 || echo "N/A")
+OUT_DIR="$ROOT_DIRECTORY/out/target/product/$DEVICE"
 STICKER_URL="https://raw.githubusercontent.com/Weebo354342432/reimagined-enigma/main/update.webp"
 
-# CLI parameters. Fetch whatever input the user has provided.
+# --- Helper Functions ---
+
+# Function to print error messages and exit
+die() {
+    echo -e "$RED\nERROR: $1$RESET\n"
+    exit 1
+}
+
+# Function to calculate and format duration
+get_duration() {
+    local start_time=$1
+    local end_time=$2
+    local difference=$((end_time - start_time))
+    local hours=$((difference / 3600))
+    local minutes=$(((difference % 3600) / 60))
+    local seconds=$((difference % 60))
+
+    local duration=""
+    if [[ $hours -gt 0 ]]; then
+        duration="${hours} hour(s), "
+    fi
+    if [[ $minutes -gt 0 || $hours -gt 0 ]]; then
+        duration="${duration}${minutes} minute(s) and "
+    fi
+    duration="${duration}${seconds} second(s)"
+    echo "$duration"
+}
+
+# --- Telegram Functions ---
+
+# Function to generate a formatted Telegram message
+# Arguments:
+#   $1: Status Icon (e.g., 🟡)
+#   $2: Status Title (e.g., "Compiling ROM...")
+#   $3: Details (multiline string of key-value pairs)
+#   $4: Footer (optional, e.g., "Compilation took 1 hour")
+generate_telegram_message() {
+    local icon="$1"
+    local title="$2"
+    local details="$3"
+    local footer="$4"
+
+    local message="<b>$icon | $title</b>"
+
+    if [[ -n "$details" ]]; then
+        message+="\n\n$details"
+    fi
+
+    if [[ -n "$footer" ]]; then
+        message+="\n\n<i>$footer</i>"
+    fi
+
+    echo -e "$message"
+}
+
+# Function to send a message to Telegram
+send_message() {
+    local message="$1"
+    local chat_id="$2"
+    local response
+    response=$(curl -s "https://api.telegram.org/bot$CONFIG_BOT_TOKEN/sendMessage" \
+        -d chat_id="$chat_id" \
+        -d "parse_mode=html" \
+        -d "disable_web_page_preview=true" \
+        -d text="$message")
+
+    # Return message_id
+    echo "$response" | grep -o '"message_id":[0-9]*' | cut -d':' -f2
+}
+
+# Function to edit a message on Telegram
+edit_message() {
+    local message="$1"
+    local chat_id="$2"
+    local message_id="$3"
+    curl -s "https://api.telegram.org/bot$CONFIG_BOT_TOKEN/editMessageText" \
+        -d chat_id="$chat_id" \
+        -d "parse_mode=html" \
+        -d "message_id=$message_id" \
+        -d text="$message" > /dev/null
+}
+
+# Function to send a file to Telegram
+send_file() {
+    local file_path="$1"
+    local chat_id="$2"
+    curl --progress-bar -F document="@$file_path" "https://api.telegram.org/bot$CONFIG_BOT_TOKEN/sendDocument" \
+        -F chat_id="$chat_id" \
+        -F "disable_web_page_preview=true" \
+        -F "parse_mode=html"
+}
+
+# Function to send a sticker to Telegram
+send_sticker() {
+    local sticker_url="$1"
+    local chat_id="$2"
+    local sticker_file="$ROOT_DIRECTORY/sticker.webp"
+
+    curl -sL "$sticker_url" -o "$sticker_file"
+
+    curl -s "https://api.telegram.org/bot$CONFIG_BOT_TOKEN/sendSticker" \
+        -F sticker="@$sticker_file" \
+        -F chat_id="$chat_id" \
+        -F "is_animated=false" \
+        -F "is_video=false" > /dev/null
+
+    rm -f "$sticker_file"
+}
+
+# --- Upload Function ---
+
+# Function to upload a file to PixelDrain
+upload_file() {
+    local file_path="$1"
+    local response
+    response=$(curl -s -T "$file_path" -u ":$CONFIG_PDUP_API" https://pixeldrain.com/api/file/)
+    local hash
+    hash=$(echo "$response" | grep -Po '(?<="id":")[^"]*')
+
+    if [[ -n "$hash" ]]; then
+        echo "https://pixeldrain.com/u/$hash"
+    else
+        echo "Upload failed"
+    fi
+}
+
+# --- Build Functions ---
+
+# Function to get build progress
+fetch_progress() {
+    local progress
+    progress=$( \
+        sed -n '/ ninja/,$p' "$ROOT_DIRECTORY/build.log" | \
+            grep -Po '\d+% \d+/\d+' | \
+            tail -n1 | \
+            sed -e 's/ / (/; s/$/)/' \
+    )
+
+    if [ -z "$progress" ]; then
+        echo "Initializing..."
+    else
+        echo "$progress"
+    fi
+}
+
+# --- Main Script ---
+
+# CLI parameters parsing
 while [[ $# -gt 0 ]]; do
     case $1 in
-    -s | --sync)
-        SYNC="1"
-        ;;
-    -c | --clean)
-        CLEAN="1"
-        ;;
+    -s | --sync) SYNC="1" ;;
+    -c | --clean) CLEAN="1" ;;
     -o | --official)
         if [ -n "$CONFIG_OFFICIAL_FLAG" ]; then
             OFFICIAL="1"
         else
-            echo -e "$RED\nERROR: Please specify the flag to export for official build in the configuration!!$RESET\n"
-            exit 1
+            die "Official flag (CONFIG_OFFICIAL_FLAG) not set in configuration."
         fi
         ;;
     -h | --help)
-        echo -e "\nNote: • You should specify all the mandatory variables in the script!
-      • Just run "./$0" for normal build
-Usage: ./build_rom.sh [OPTION]
-Example:
-    ./$(basename $0) -s -c or ./$(basename $0) --sync --clean
-
-Mandatory options:
-    No option is mandatory!, just simply run the script without passing any parameter.
-
-Options:
-    -s, --sync            Sync sources before building.
-    -c, --clean           Clean build directory before compilation.
-    -o, --official        Build the official variant during compilation.\n"
-        exit 1
+        echo -e "\nNote: • You should specify all the mandatory variables in the script!"
+        echo -e "      • Just run \"./$(basename "$0")\" for a normal build"
+        echo -e "Usage: ./$(basename "$0") [OPTION]\n"
+        echo -e "Options:"
+        echo -e "    -s, --sync            Sync sources before building."
+        echo -e "    -c, --clean           Clean build directory before compilation."
+        echo -e "    -o, --official        Build the official variant."
+        echo -e "    -h, --help            Show this help message.\n"
+        exit 0
         ;;
     *)
-        echo -e "$RED\nUnknown parameter(s) passed: $1$RESET\n"
-        exit 1
+        die "Unknown parameter(s) passed: $1"
         ;;
     esac
     shift
 done
 
-# Configuration Checking. Exit the script if required variables aren"t set.
-if [[ $CONFIG_LUNCH == "" ]] || [[ $CONFIG_TARGET == "" ]]; then
-    echo -e "$RED\nERROR: Please specify all of the mandatory variables!! Exiting now...$RESET\n"
-    exit 1
+# Configuration Checking
+if [[ -z "$CONFIG_TARGET" || -z "$CONFIG_BOT_TOKEN" || -z "$CONFIG_CHATID" ]]; then
+    die "Please set all mandatory variables in config.env: CONFIG_TARGET, CONFIG_BOT_TOKEN, CONFIG_CHATID."
 fi
 
-# Telegram Environment. Declare all of the related constants and functions.
-export BOT_MESSAGE_URL="https://api.telegram.org/bot$CONFIG_BOT_TOKEN/sendMessage"
-export BOT_EDIT_MESSAGE_URL="https://api.telegram.org/bot$CONFIG_BOT_TOKEN/editMessageText"
-export BOT_FILE_URL="https://api.telegram.org/bot$CONFIG_BOT_TOKEN/sendDocument"
-export BOT_STICKER_URL="https://api.telegram.org/bot$CONFIG_BOT_TOKEN/sendSticker"
-export BOT_PIN_URL="https://api.telegram.org/bot$CONFIG_BOT_TOKEN/pinChatMessage"
-
-send_message() {
-    local RESPONSE=$(curl "$BOT_MESSAGE_URL" -d chat_id="$2" \
-        -d "parse_mode=html" \
-        -d "disable_web_page_preview=true" \
-        -d text="$1")
-    local MESSAGE_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | cut -d':' -f2)
-    echo "$MESSAGE_ID"
-}
-
-edit_message() {
-    curl "$BOT_EDIT_MESSAGE_URL" -d chat_id="$2" \
-        -d "parse_mode=html" \
-        -d "message_id=$3" \
-        -d text="$1"
-}
-
-send_file() {
-    curl --progress-bar -F document=@"$1" "$BOT_FILE_URL" \
-        -F chat_id="$2" \
-        -F "disable_web_page_preview=true" \
-        -F "parse_mode=html"
-}
-
-send_sticker() {
-    curl -sL "$1" -o "$ROOT_DIRECTORY/sticker.webp"
-
-    local STICKER_FILE="$ROOT_DIRECTORY/sticker.webp"
-
-    curl "$BOT_STICKER_URL" -F sticker=@"$STICKER_FILE" \
-        -F chat_id="$2" \
-        -F "is_animated=false" \
-        -F "is_video=false"
-}
-
-upload_file() {
-    RESPONSE=$(curl -T "$1" -u :"$CONFIG_PDUP_API" https://pixeldrain.com/api/file/)
-    HASH=$(echo "$RESPONSE" | grep -Po '(?<="id":")[^"]*')
-
-    echo "https://pixeldrain.com/u/$HASH"
-}
-
-send_message_to_error_chat() {
-    local response=$(curl -s -X POST "$BOT_MESSAGE_URL" -d chat_id="$CONFIG_ERROR_CHATID" \
-        -d "parse_mode=html" \
-        -d "disable_web_page_preview=true" \
-        -d text="$1")
-    local message_id=$(echo "$response" | grep -o '"message_id":[0-9]*' | cut -d':' -f2)                 
-    echo "$message_id"
-}
-
-send_file_to_error_chat() {
-    curl --progress-bar -F document=@"$1" "$BOT_FILE_URL" \
-        -F chat_id="$CONFIG_ERROR_CHATID" \
-        -F "disable_web_page_preview=true" \
-        -F "parse_mode=html"
-}
-
-fetch_progress() {
-    local PROGRESS=$(
-        sed -n '/ ninja/,$p' "$ROOT_DIRECTORY/build.log" |
-            grep -Po '\d+% \d+/\d+' |
-            tail -n1 |
-            sed -e 's/ / (/; s/$/)/'
-    )
-
-    if [ -z "$PROGRESS" ]; then
-        echo "Initializing the build system..."
-    else
-        echo "$PROGRESS"
-    fi
-}
-
-# Cleanup Files. Nuke all of the files from previous runs.
-if [ -f "out/error.log" ]; then
-    rm -f "out/error.log"
+# Set error chat ID to main chat ID if not specified
+if [[ -z "$CONFIG_ERROR_CHATID" ]]; then
+    CONFIG_ERROR_CHATID="$CONFIG_CHATID"
 fi
 
-if [ -f "out/.lock" ]; then
-    rm -f "out/.lock"
-fi
+# Cleanup old files
+rm -f "out/error.log" "out/.lock" "$ROOT_DIRECTORY/build.log"
 
-if [ -f "$ROOT_DIRECTORY/build.log" ]; then
-    rm -f "$ROOT_DIRECTORY/build.log"
-fi
-
-# Jobs Configuration. Determine the number of cores to be used.
+# Jobs Configuration
 CORE_COUNT=$(nproc --all)
-CONFIG_SYNC_JOBS="$([ "$CORE_COUNT" -gt 8 ] && echo "12" || echo "$CORE_COUNT")"
-CONFIG_COMPILE_JOBS="$CORE_COUNT"
+CONFIG_SYNC_JOBS=$((CORE_COUNT > 8 ? 12 : CORE_COUNT))
+CONFIG_COMPILE_JOBS=$CORE_COUNT
 
-# Execute Parameters. Do the work if specified.
-if [[ -n $SYNC ]]; then
-    # Send a notification that the syncing process has started.
+# Sync sources if requested
+if [[ -n "$SYNC" ]]; then
+    echo -e "$BOLD_GREEN\nStarting to sync sources...$RESET\n"
 
-    sync_start_message="🟡 | <i>Syncing sources!!</i>
-
-<b>• ROM:</b> <code>$ROM_NAME</code>
-<b>• DEVICE:</b> <code>$DEVICE</code>
-<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
-<b>• JOBS:</b> <code>$CONFIG_SYNC_JOBS Cores</code>
-<b>• DIRECTORY:</b> <code>$(pwd)</code>"
-
+    details="<b>• ROM:</b> <code>$ROM_NAME</code>\n<b>• DEVICE:</b> <code>$DEVICE</code>\n<b>• JOBS:</b> <code>$CONFIG_SYNC_JOBS Cores</code>"
+    sync_start_message=$(generate_telegram_message "🟡" "Syncing sources..." "$details")
     sync_message_id=$(send_message "$sync_start_message" "$CONFIG_CHATID")
 
-    SYNC_START=$(TZ=Asia/Kolkata date +"%s")
+    sync_start_time=$(date -u +%s)
 
-    echo -e "$BOLD_GREEN\nStarting to sync sources now...$RESET\n"
-    if ! repo sync -c --jobs-network=$CONFIG_SYNC_JOBS -j$CONFIG_SYNC_JOBS --jobs-checkout=$CONFIG_SYNC_JOBS --optimized-fetch --prune --force-sync --no-clone-bundle --no-tags; then
-        echo -e "$RED\nInitial sync has failed!!$RESET" && echo -e "$BOLD_GREEN\nTrying to sync again with lesser arguments...$RESET\n"
-
-        if ! repo sync -j$CONFIG_SYNC_JOBS; then
-            echo -e "$RED\nSyncing has failed completely!$RESET" && echo -e "$BOLD_GREEN\nStarting the build now...$RESET\n"
+    if ! repo sync -c --jobs-network="$CONFIG_SYNC_JOBS" -j"$CONFIG_SYNC_JOBS" --jobs-checkout="$CONFIG_SYNC_JOBS" --optimized-fetch --prune --force-sync --no-clone-bundle --no-tags; then
+        echo -e "$YELLOW\nInitial sync failed. Retrying with fewer arguments...$RESET\n"
+        if ! repo sync -j"$CONFIG_SYNC_JOBS"; then
+            sync_end_time=0
+            echo -e "$RED\nSync failed completely. Proceeding with build anyway...$RESET\n"
+            sync_failed_message=$(generate_telegram_message "🔴" "Syncing sources failed!" "" "Proceeding with build...")
+            edit_message "$sync_failed_message" "$CONFIG_CHATID" "$sync_message_id"
         else
-            SYNC_END=$(TZ=Asia/Dhaka date +"%s")
+            sync_end_time=$(date -u +%s)
         fi
     else
-        SYNC_END=$(TZ=Asia/Dhaka date +"%s")
+        sync_end_time=$(date -u +%s)
     fi
 
-    if [[ -n $SYNC_END ]]; then
-        DIFFERENCE=$((SYNC_END - SYNC_START))
-        MINUTES=$((($DIFFERENCE % 3600) / 60))
-        SECONDS=$(((($DIFFERENCE % 3600) / 60) / 60))
-
-        sync_finished_message="🟢 | <i>Sources synced!!</i>
-
-<b>• ROM:</b> <code>$ROM_NAME</code>
-<b>• DEVICE:</b> <code>$DEVICE</code>
-<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
-<b>• JOBS:</b> <code>$CONFIG_SYNC_JOBS Cores</code>
-<b>• DIRECTORY:</b> <code>$(pwd)</code>
-
-<i>Syncing took $MINUTES minutes(s) and $SECONDS seconds(s)</i>"
-
+    if [[ "$sync_end_time" -ne 0 ]]; then
+        duration=$(get_duration "$sync_start_time" "$sync_end_time")
+        details="<b>• ROM:</b> <code>$ROM_NAME</code>\n<b>• DEVICE:</b> <code>$DEVICE</code>"
+        sync_finished_message=$(generate_telegram_message "🟢" "Sources synced!" "$details" "Syncing took $duration.")
         edit_message "$sync_finished_message" "$CONFIG_CHATID" "$sync_message_id"
-    else
-        sync_failed_message="🔴 | <i>Syncing sources failed!!</i>
-    
-<i>Trying to compile the ROM now...</i>"
-
-        edit_message "$sync_failed_message" "$CONFIG_CHATID" "$sync_message_id"
     fi
 fi
 
-if [[ -n $CLEAN ]]; then
-    echo -e "$BOLD_GREEN\nNuking the out directory now...$RESET\n"
+# Clean out directory if requested
+if [[ -n "$CLEAN" ]]; then
+    echo -e "$BOLD_GREEN\nNuking the out directory...$RESET\n"
     rm -rf "out"
 fi
 
-# Send a notification that the build process has started.
+# --- Build Process ---
 
-build_start_message="🟡 | <i>Compiling ROM...</i>
+BUILD_TYPE=$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")
 
-<b>• ROM:</b> <code>$ROM_NAME</code>
-<b>• DEVICE:</b> <code>$DEVICE</code>
-<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
-<b>• JOBS:</b> <code>$CONFIG_COMPILE_JOBS Cores</code>
-<b>• TYPE:</b> <code>$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")</code>
-<b>• PROGRESS</b>: <code>Lunching...</code>"
-
+details="<b>• ROM:</b> <code>$ROM_NAME</code>\n<b>• DEVICE:</b> <code>$DEVICE</code>\n<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>\n<b>• TYPE:</b> <code>$BUILD_TYPE</code>\n<b>• PROGRESS:</b> <code>Initializing...</code>"
+build_start_message=$(generate_telegram_message "🟡" "Compiling ROM..." "$details")
 build_message_id=$(send_message "$build_start_message" "$CONFIG_CHATID")
 
-BUILD_START=$(TZ=Asia/Dhaka date +"%s")
+build_start_time=$(date -u +%s)
 
-# Start Compilation. Compile the ROM according to the configuration.
-echo -e "$BOLD_GREEN\nSetting up the build environment...$RESET"
+echo -e "$BOLD_GREEN\nSetting up build environment...$RESET"
 source build/envsetup.sh
 
-echo -e "$BOLD_GREEN\nStarting to lunch "$DEVICE" now...$RESET"
-lunch "$CONFIG_LUNCH"
+echo -e "$BOLD_GREEN\nRunning breakfast for \"$DEVICE\"...$RESET"
+breakfast "$DEVICE"
 
-if [ $? -eq 0 ]; then
-    echo -e "$BOLD_GREEN\nStarting to build now...$RESET"
-    m installclean -j$CONFIG_COMPILE_JOBS
-    m "$CONFIG_TARGET" -j$CONFIG_COMPILE_JOBS 2>&1 | tee -a "$ROOT_DIRECTORY/build.log" &
-else
-    echo -e "$RED\nFailed to lunch "$DEVICE"$RESET"
-
-    build_failed_message="🔴 | <i>ROM compilation failed...</i>
-    
-<i>Failed at lunching $DEVICE...</i>"
-
+if [ $? -ne 0 ]; then
+    build_failed_message=$(generate_telegram_message "🔴" "ROM compilation failed" "" "Failed at running breakfast for $DEVICE.")
     edit_message "$build_failed_message" "$CONFIG_CHATID" "$build_message_id"
     send_sticker "$STICKER_URL" "$CONFIG_CHATID"
     exit 1
 fi
 
-# Contiounsly update the progress of the build.
-until [ -z "$(jobs -r)" ]; do
-    if [ "$(fetch_progress)" = "$previous_progress" ]; then
-        continue
+echo -e "$BOLD_GREEN\nStarting build...$RESET"
+m installclean -j"$CONFIG_COMPILE_JOBS"
+m "$CONFIG_TARGET" -j"$CONFIG_COMPILE_JOBS" > "$ROOT_DIRECTORY/build.log" 2>&1 &
+
+# Monitor build progress
+previous_progress=""
+while jobs -r &>/dev/null; do
+    current_progress=$(fetch_progress)
+    if [[ "$current_progress" != "$previous_progress" ]]; then
+        details="<b>• ROM:</b> <code>$ROM_NAME</code>\n<b>• DEVICE:</b> <code>$DEVICE</code>\n<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>\n<b>• TYPE:</b> <code>$BUILD_TYPE</code>\n<b>• PROGRESS:</b> <code>$current_progress</code>"
+        progress_message=$(generate_telegram_message "🟡" "Compiling ROM..." "$details")
+        edit_message "$progress_message" "$CONFIG_CHATID" "$build_message_id"
+        previous_progress="$current_progress"
     fi
-
-    build_progress_message="🟡 | <i>Compiling ROM...</i>
-
-<b>• ROM:</b> <code>$ROM_NAME</code>
-<b>• DEVICE:</b> <code>$DEVICE</code>
-<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
-<b>• JOBS:</b> <code>$CONFIG_COMPILE_JOBS Cores</code>
-<b>• TYPE:</b> <code>$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")</code>
-<b>• PROGRESS:</b> <code>$(fetch_progress)</code>"
-
-    edit_message "$build_progress_message" "$CONFIG_CHATID" "$build_message_id"
-
-    previous_progress=$(fetch_progress)
-
-    sleep 5
+    sleep 10
 done
 
-build_progress_message="🟡 | <i>Compiling ROM...</i>
+wait # Wait for the background build process to finish
 
-<b>• ROM:</b> <code>$ROM_NAME</code>
-<b>• DEVICE:</b> <code>$DEVICE</code>
-<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
-<b>• JOBS:</b> <code>$CONFIG_COMPILE_JOBS Cores</code>
-<b>• TYPE:</b> <code>$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")</code>
-<b>• PROGRESS:</b> <code>$(fetch_progress)</code>"
+build_end_time=$(date -u +%s)
+build_duration=$(get_duration "$build_start_time" "$build_end_time")
 
-edit_message "$build_progress_message" "$CONFIG_CHATID" "$build_message_id"
-
-# Upload Build. Upload the output ROM ZIP file to the index.
-BUILD_END=$(TZ=Asia/Dhaka date +"%s")
-DIFFERENCE=$((BUILD_END - BUILD_START))
-HOURS=$(($DIFFERENCE / 3600))
-MINUTES=$((($DIFFERENCE % 3600) / 60))
-
-if [ -s "out/error.log" ]; then
-    # Send a notification that the build has failed.
-    build_failed_message="🔴 | <i>ROM compilation failed...</i>
-    
-<i>Check out the log below!</i>"
-
-    edit_message_to_error_chat "$build_failed_message" "$CONFIG_ERROR_CHATID" "$build_message_id"
-    send_file_to_error_chat "out/error.log" "$CONFIG_ERROR_CHATID"
+# Check build result
+if ! grep -q "#### build completed successfully" "$ROOT_DIRECTORY/build.log"; then
+    echo -e "$RED\nBuild failed. Check build.log for details.$RESET"
+    build_failed_message=$(generate_telegram_message "🔴" "ROM compilation failed" "" "Build failed after $build_duration. Check out the log for more details.")
+    edit_message "$build_failed_message" "$CONFIG_CHATID" "$build_message_id"
+    send_file "$ROOT_DIRECTORY/build.log" "$CONFIG_ERROR_CHATID"
     send_sticker "$STICKER_URL" "$CONFIG_CHATID"
 else
-    ota_file=$(ls "$OUT"/*ota*.zip | tail -n -1)
-    rm "$ota_file"
+    echo -e "$BOLD_GREEN\nBuild successful!$RESET"
 
-    zip_file=$(ls "$OUT"/*$DEVICE*.zip | tail -n -1)
-    json_file=$(ls "$OUT"/*$DEVICE*.json | tail -n -1)
+    # Find build artifacts
+    zip_file=$(find "$OUT_DIR" -name "*$DEVICE*.zip" -type f | tail -n1)
+    json_file=$(find "$OUT_DIR" -name "*$DEVICE*.json" -type f | tail -n1)
 
-    echo -e "$BOLD_GREEN\nStarting to upload the ZIP file now...$RESET\n"
+    if [[ -z "$zip_file" ]]; then
+        build_failed_message=$(generate_telegram_message "🔴" "Build finished, but no ZIP file found!" "" "Check the output directory for details.")
+        edit_message "$build_failed_message" "$CONFIG_CHATID" "$build_message_id"
+        exit 1
+    fi
+
+    echo -e "$BOLD_GREEN\nUploading build artifacts...$RESET"
 
     zip_file_url=$(upload_file "$zip_file")
-    zip_file_md5sum=$(md5sum $zip_file | awk '{print $1}')
-    zip_file_size=$(ls -sh $zip_file | awk '{print $1}')
+    zip_file_md5sum=$(md5sum "$zip_file" | awk '{print $1}')
+    zip_file_size=$(ls -sh "$zip_file" | awk '{print $1}')
 
-    echo -e "$BOLD_GREEN\nStarting to upload the JSON file now...$RESET\n"
+    json_file_url=""
+    if [[ -n "$json_file" ]]; then
+        json_file_url=$(upload_file "$json_file")
+    fi
 
-    json_file_url=$(upload_file "$json_file")
+    details="<b>• ROM:</b> <code>$ROM_NAME</code>\n<b>• DEVICE:</b> <code>$DEVICE</code>\n<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>\n<b>• TYPE:</b> <code>$BUILD_TYPE</code>\n<b>• SIZE:</b> <code>$zip_file_size</code>\n<b>• MD5SUM:</b> <code>$zip_file_md5sum</code>"
+    if [[ -n "$json_file_url" && "$json_file_url" != "Upload failed" ]]; then
+        details+="\n<b>• JSON:</b> <a href=\"$json_file_url\">Here</a>"
+    fi
+    if [[ -n "$zip_file_url" && "$zip_file_url" != "Upload failed" ]]; then
+        details+="\n<b>• DOWNLOAD:</b> <a href=\"$zip_file_url\">Here</a>"
+    fi
 
-    build_finished_message="🟢 | <i>ROM compiled!!</i>
-
-<b>• ROM:</b> <code>$ROM_NAME</code>
-<b>• DEVICE:</b> <code>$DEVICE</code>
-<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>
-<b>• TYPE:</b> <code>$([ "$OFFICIAL" == "1" ] && echo "Official" || echo "Unofficial")</code>
-<b>• SIZE:</b> <code>$zip_file_size</code>
-<b>• MD5SUM:</b> <code>$zip_file_md5sum</code>
-<b>• JSON:</b> $json_file_url
-<b>• DOWNLOAD:</b> $zip_file_url
-
-<i>Compilation took $HOURS hours(s) and $MINUTES minutes(s)</i>"
+    build_finished_message=$(generate_telegram_message "🟢" "ROM compiled successfully!" "$details" "Compilation took $build_duration.")
 
     edit_message "$build_finished_message" "$CONFIG_CHATID" "$build_message_id"
     send_sticker "$STICKER_URL" "$CONFIG_CHATID"
 fi
 
-if [[ $POWEROFF == true ]]; then
-echo -e "$BOLD_GREEN\nAyo, powering off server...$RESET"
-sudo poweroff
+if [[ "$POWEROFF" == "true" ]]; then
+    echo -e "$BOLD_GREEN\nPowering off server...$RESET"
+    sudo poweroff
 fi
