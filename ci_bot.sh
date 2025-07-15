@@ -147,7 +147,7 @@ send_sticker() {
 # --- Upload Function ---
 
 # Function to upload a file to PixelDrain
-upload_file() {
+upload_file_pd() {
     local file_path="$1"
     local response
     response=$(curl -s -T "$file_path" -u ":$CONFIG_PDUP_API" https://pixeldrain.com/api/file/)
@@ -156,6 +156,18 @@ upload_file() {
 
     if [[ -n "$hash" ]]; then
         echo "https://pixeldrain.com/u/$hash"
+    else
+        echo "Upload failed"
+    fi
+}
+
+upload_file_gofile() {
+    FILE_UPLOAD_PATH="$1"
+    GOFILE_SERVER=$(curl -s https://api.gofile.io/servers | grep -oP '"name":"\K[^"]+' | head -n 1)
+    GOFILE_LINK=$(curl -F "file=@$FILE_UPLOAD_PATH" "https://${GOFILE_SERVER}.gofile.io/uploadFile" | grep -oP '"downloadPage":"\K[^"]+' | head -n 1) 2>&1
+
+    if [[ -n "$GOFILE_LINK" ]]; then
+        echo "$GOFILE_LINK"
     else
         echo "Upload failed"
     fi
@@ -335,21 +347,31 @@ else
 
     echo -e "$BOLD_GREEN\nUploading build artifacts...$RESET"
 
-    zip_file_url=$(upload_file "$zip_file")
+    pd_file_url=$(upload_file_pd "$zip_file")
+
+    if [[ "$CONFIG_GOFILE" == "true" ]]; then
+        gofile_file_url=$(upload_file_gofile "$zip_file")
+    fi
+
     zip_file_md5sum=$(md5sum "$zip_file" | awk '{print $1}')
     zip_file_size=$(ls -sh "$zip_file" | awk '{print $1}')
-
     json_file_url=""
+
     if [[ -n "$json_file" ]]; then
-        json_file_url=$(upload_file "$json_file")
+        json_file_url=$(upload_file_pd "$json_file")
     fi
 
     details="<b>• ROM:</b> <code>$ROM_NAME</code>\n<b>• DEVICE:</b> <code>$DEVICE</code>\n<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>\n<b>• TYPE:</b> <code>$BUILD_TYPE</code>\n<b>• SIZE:</b> <code>$zip_file_size</code>\n<b>• MD5SUM:</b> <code>$zip_file_md5sum</code>"
     if [[ -n "$json_file_url" && "$json_file_url" != "Upload failed" ]]; then
         details+="\n<b>• JSON:</b> <a href=\"$json_file_url\">Here</a>"
     fi
-    if [[ -n "$zip_file_url" && "$zip_file_url" != "Upload failed" ]]; then
-        details+="\n<b>• DOWNLOAD:</b> <a href=\"$zip_file_url\">Here</a>"
+    if [[ -n "$pd_file_url" && "$pd_file_url" != "Upload failed" ]]; then
+        details+="\n<b>• PIXELDRAIN:</b> <a href=\"$pd_file_url\">Here</a>"
+    fi
+    if [[ "$CONFIG_GOFILE" == "true" ]]; then
+        if [[ -n "$gofile_file_url" && "$gofile_file_url" != "Upload failed" ]]; then
+            details+="\n<b>• GOFILE:</b> <a href=\"$gofile_file_url\">Here</a>"
+        fi
     fi
 
     build_finished_message=$(generate_telegram_message "🟢" "ROM compiled successfully!" "$details" "Compilation took $build_duration.")
