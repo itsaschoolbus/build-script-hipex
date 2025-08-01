@@ -179,7 +179,7 @@ upload_file_gofile() {
 fetch_progress() {
     local progress
     progress=$( \
-        sed -n '/ ninja/,$p' "$ROOT_DIRECTORY/build.log" | \
+        tail -n 30 "$ROOT_DIRECTORY/build.log" | \
             grep -Po '\d+% \d+/\d+' | \
             tail -n1 | \
             sed -e 's/ / (/; s/$/)/' \
@@ -303,7 +303,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo -e "$BOLD_GREEN\nStarting build...$RESET"
+echo -e "$BOLD_GREEN\nStarting build... (Logs at build.log)$RESET"
 m installclean -j"$CONFIG_COMPILE_JOBS"
 m "$CONFIG_TARGET" -j"$CONFIG_COMPILE_JOBS" > "$ROOT_DIRECTORY/build.log" 2>&1 &
 
@@ -311,14 +311,21 @@ m "$CONFIG_TARGET" -j"$CONFIG_COMPILE_JOBS" > "$ROOT_DIRECTORY/build.log" 2>&1 &
 previous_progress=""
 while jobs -r &>/dev/null; do
     current_progress=$(fetch_progress)
-    if [[ "$current_progress" != "$previous_progress" ]]; then
+    
+    # Show live progress in the terminal
+    echo -ne "${YELLOW}Build progress: ${current_progress}${RESET}\r"
+    
+    if [[ "$current_progress" != "$previous_progress" && "$current_progress" != "Initializing..." ]]; then
         details="<b>• ROM:</b> <code>$ROM_NAME</code>\n<b>• DEVICE:</b> <code>$DEVICE</code>\n<b>• ANDROID VERSION:</b> <code>$ANDROID_VERSION</code>\n<b>• TYPE:</b> <code>$BUILD_TYPE</code>\n<b>• PROGRESS:</b> <code>$current_progress</code>"
         progress_message=$(generate_telegram_message "🟡" "Compiling ROM..." "$details")
         edit_message "$progress_message" "$CONFIG_CHATID" "$build_message_id"
         previous_progress="$current_progress"
     fi
-    sleep 10
+    sleep 15 # Sleep a bit longer to reduce API calls and script load
 done
+
+# Print a newline to move off the progress line
+echo -e "\n"
 
 wait # Wait for the background build process to finish
 
@@ -330,8 +337,22 @@ if ! grep -q "#### build completed successfully" "$ROOT_DIRECTORY/build.log"; th
     echo -e "$RED\nBuild failed. Check build.log for details.$RESET"
     build_failed_message=$(generate_telegram_message "🔴" "ROM compilation failed" "" "Build failed after $build_duration. Check out the log for more details.")
     edit_message "$build_failed_message" "$CONFIG_CHATID" "$build_message_id"
-    send_file "$ROOT_DIRECTORY/build.log" "$CONFIG_ERROR_CHATID"
+    
+    # Send the concise error log instead of the full build log
+    if [ -f "out/error.log" ]; then
+        send_file "out/error.log" "$CONFIG_ERROR_CHATID"
+    else
+        echo "out/error.log not found, sending full build.log instead."
+        send_file "$ROOT_DIRECTORY/build.log" "$CONFIG_ERROR_CHATID"
+    fi
+    
     send_sticker "$STICKER_URL" "$CONFIG_CHATID"
+    
+    # Display the error log in the terminal
+    if [ -f "out/error.log" ]; then
+        echo -e "\n${RED}Displaying error log:${RESET}"
+        cat "out/error.log"
+    fi
 else
     echo -e "$BOLD_GREEN\nBuild successful!$RESET"
 
