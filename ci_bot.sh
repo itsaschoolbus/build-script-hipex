@@ -161,6 +161,7 @@ upload_file_pd() {
     fi
 }
 
+# Function to upload a file to Gofile
 upload_file_gofile() {
     FILE_UPLOAD_PATH="$1"
     GOFILE_SERVER=$(curl -s https://api.gofile.io/servers | grep -oP '"name":"\K[^"]+' | head -n 1)

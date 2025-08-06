@@ -41,6 +41,7 @@ Before using this script, ensure you have the following dependencies installed:
     - `CONFIG_BOT_TOKEN`: Your Telegram bot token.
     - `CONFIG_ERROR_CHATID`: (Optional) A separate chat ID for error logs.
     - `CONFIG_PDUP_API`: Your PixelDrain API key.
+    - `CONFIG_GOFILE`: Whether to upload the zip to Gofile.
     - `POWEROFF`: Set to `true` to power off the server after the build is complete.
 
 ## Usage
