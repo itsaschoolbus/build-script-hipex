@@ -40,7 +40,10 @@ Before using this script, ensure you have the following dependencies installed:
     - `CONFIG_CHATID`: Your Telegram channel/group chat ID.
     - `CONFIG_BOT_TOKEN`: Your Telegram bot token.
     - `CONFIG_ERROR_CHATID`: (Optional) A separate chat ID for error logs.
+    - `CONFIG_SEND_STICKER`: Whether the bot should send stickers to Telegram.
+    - `CONFIG_STICKER_URL`: The link to the sticker image.
     - `CONFIG_PDUP_API`: Your PixelDrain API key.
+    - `CONFIG_GOFILE`: Whether to upload the zip to Gofile.
     - `POWEROFF`: Set to `true` to power off the server after the build is complete.
 
 ## Usage

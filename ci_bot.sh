@@ -33,7 +33,6 @@ ROOT_DIRECTORY="$(pwd)"
 ROM_NAME="$(sed "s#.*/##" <<<"$(pwd)")"
 ANDROID_VERSION=$(grep -oP '(?<=android-)[0-9]+' .repo/manifests/default.xml | head -n1 || echo "N/A")
 OUT_DIR="$ROOT_DIRECTORY/out/target/product/$DEVICE"
-STICKER_URL="https://raw.githubusercontent.com/Weebo354342432/reimagined-enigma/main/update.webp"
 
 # --- Helper Functions ---
 
@@ -161,6 +160,7 @@ upload_file_pd() {
     fi
 }
 
+# Function to upload a file to Gofile
 upload_file_gofile() {
     FILE_UPLOAD_PATH="$1"
     GOFILE_SERVER=$(curl -s https://api.gofile.io/servers | grep -oP '"name":"\K[^"]+' | head -n 1)
@@ -299,7 +299,9 @@ breakfast "$DEVICE"
 if [ $? -ne 0 ]; then
     build_failed_message=$(generate_telegram_message "🔴" "ROM compilation failed" "" "Failed at running breakfast for $DEVICE.")
     edit_message "$build_failed_message" "$CONFIG_CHATID" "$build_message_id"
-    send_sticker "$STICKER_URL" "$CONFIG_CHATID"
+    if [[ "$CONFIG_SEND_STICKER" == "true" ]]; then
+        send_sticker "$CONFIG_STICKER_URL" "$CONFIG_CHATID"
+    fi
     exit 1
 fi
 
@@ -345,9 +347,11 @@ if ! grep -q "#### build completed successfully" "$ROOT_DIRECTORY/build.log"; th
         echo "out/error.log not found, sending full build.log instead."
         send_file "$ROOT_DIRECTORY/build.log" "$CONFIG_ERROR_CHATID"
     fi
-    
-    send_sticker "$STICKER_URL" "$CONFIG_CHATID"
-    
+
+    if [[ "$CONFIG_SEND_STICKER" == "true" ]]; then
+        send_sticker "$CONFIG_STICKER_URL" "$CONFIG_CHATID"
+    fi
+
     # Display the error log in the terminal
     if [ -f "out/error.log" ]; then
         echo -e "\n${RED}Displaying error log:${RESET}"
@@ -398,7 +402,9 @@ else
     build_finished_message=$(generate_telegram_message "🟢" "ROM compiled successfully!" "$details" "Compilation took $build_duration.")
 
     edit_message "$build_finished_message" "$CONFIG_CHATID" "$build_message_id"
-    send_sticker "$STICKER_URL" "$CONFIG_CHATID"
+    if [[ "$CONFIG_SEND_STICKER" == "true" ]]; then
+        send_sticker "$CONFIG_STICKER_URL" "$CONFIG_CHATID"
+    fi
 fi
 
 if [[ "$POWEROFF" == "true" ]]; then
